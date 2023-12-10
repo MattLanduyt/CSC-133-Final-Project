@@ -7,12 +7,15 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Point;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.SoundPool;
+import android.os.Build;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import java.io.IOException;
 
+import java.io.IOException;
 
 class SnakeGame extends SurfaceView implements Runnable{
 
@@ -45,63 +48,81 @@ class SnakeGame extends SurfaceView implements Runnable{
     private Snake mSnake;
     // And an apple
     private Apple mApple;
-	
-	// adding reference to audio
-	private Audio audio;
 
+    // adding in a star power-up!
+    private Star mStar;
 
-	// added the audio class for strategy implementation
-	public interface Audio {
-		void playEatSound();
-		void playCrashSound();
-	}
+    // adding in obstacles
+    private Obstacle mObstacle;
 
 
 
     // This is the constructor method that gets called
     // from SnakeActivity
-    public SnakeGame(Context context, Point size, Audio audio) {
+    public SnakeGame(Context context, Point size) {
         super(context);
-        mSP = new SoundPool.Builder().build();
+
         // Work out how many pixels each block is
         int blockSize = size.x / NUM_BLOCKS_WIDE;
         // How many blocks of the same size will fit into the height
         mNumBlocksHigh = size.y / blockSize;
 
         // Initialize the SoundPool
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+
+            mSP = new SoundPool.Builder()
+                    .setMaxStreams(5)
+                    .setAudioAttributes(audioAttributes)
+                    .build();
+        } else {
+            mSP = new SoundPool(5, AudioManager.STREAM_MUSIC, 0);
+        }
         try {
             AssetManager assetManager = context.getAssets();
             AssetFileDescriptor descriptor;
 
-            // Prepare the sounds in mem
+            // Prepare the sounds in memory
             descriptor = assetManager.openFd("get_apple.ogg");
             mEat_ID = mSP.load(descriptor, 0);
 
             descriptor = assetManager.openFd("snake_death.ogg");
             mCrashID = mSP.load(descriptor, 0);
 
-            this.audio = audio;
-
         } catch (IOException e) {
             // Error
         }
+
 
         // Initialize the drawing objects
         mSurfaceHolder = getHolder();
         mPaint = new Paint();
 
-        // Call the constructors of our two game objects
-        mApple = new Apple.AppleBuilder()
-                .setSpawnRange(new Point(NUM_BLOCKS_WIDE, mNumBlocksHigh))
-                .setSize(blockSize)
-                .setBitmap(context, R.drawable.apple)
-                .build();
-
+        // Call the constructors of our game objects
+        mApple = new Apple(context,
+                new Point(NUM_BLOCKS_WIDE,
+                        mNumBlocksHigh),
+                blockSize);
 
         mSnake = new Snake(context,
                 new Point(NUM_BLOCKS_WIDE,
                         mNumBlocksHigh),
                 blockSize);
+
+        mStar = new Star(context,
+                new Point(NUM_BLOCKS_WIDE,
+                        mNumBlocksHigh),
+                blockSize);
+        mStar.spawn();
+
+        mObstacle = new Obstacle(context,
+                new Point(NUM_BLOCKS_WIDE,
+                        mNumBlocksHigh),
+                blockSize);
+        mObstacle.spawn();
 
     }
 
@@ -111,9 +132,11 @@ class SnakeGame extends SurfaceView implements Runnable{
 
         // reset the snake
         mSnake.reset(NUM_BLOCKS_WIDE, mNumBlocksHigh);
-        Point spawnPoint = new Point(2, 2);
+
         // Get the apple ready for dinner
-        mApple.spawn(spawnPoint);
+        mApple.spawn();
+        mStar.spawn();
+        mObstacle.spawn();
 
         // Reset the mScore
         mScore = 0;
@@ -164,34 +187,43 @@ class SnakeGame extends SurfaceView implements Runnable{
     }
 
 
-    // Update all the game objects
+    // Update method
     public void update() {
-
         // Move the snake
         mSnake.move();
 
         // Did the head of the snake eat the apple?
-        if(mSnake.checkDinner(mApple.getLocation())){
-            // This reminds me of Edge of Tomorrow.
-            // One day the apple will be ready!
-            Point spawnPoint = new Point(2, 2);
-            mApple.spawn(spawnPoint);
+        if (mSnake.checkDinner(mApple.getLocation())) {
+            boolean isBapple = mApple.spawn();
 
-            // Add to  mScore
-            mScore = mScore + 1;
+            if (isBapple) {
+                mScore = mScore + 2;  // Add 2 points for Bapple
+            } else {
+                mScore = mScore + 1;  // Add 1 point for regular Apple
+            }
 
-            // play the new eat sound
-            audio.playEatSound();
+            mSP.play(mEat_ID, 1, 1, 0, 0, 1);
+        }
+
+        // Did the head of the snake eat the star?
+        if (mSnake.checkDinner(mStar.getLocation())) {
+            mStar.spawn();  // spawn a new star
+            mSP.play(mEat_ID, 1, 1, 0, 0, 1);
+            mStar.applySpeedBoost(mSnake);  // speed booster
+            mObstacle.spawn();  // spawn new obstacle >:)
+        }
+
+        // Did the head of the snake eat the obstacle?
+        if (mSnake.checkDinner(mObstacle.getLocation())) {
+            mScore = mScore -1;
+            mObstacle.spawn();  // spawn new obstacle
         }
 
         // Did the snake die?
         if (mSnake.detectDeath()) {
-            // play the new crash sound using strategy ;)
-            audio.playCrashSound();
-
-            mPaused =true;
+            mSP.play(mCrashID, 1, 1, 0, 0, 1);
+            mPaused = true;
         }
-
     }
 
 
@@ -214,6 +246,8 @@ class SnakeGame extends SurfaceView implements Runnable{
             // Draw the apple and the snake
             mApple.draw(mCanvas, mPaint);
             mSnake.draw(mCanvas, mPaint);
+            mStar.draw(mCanvas, mPaint);
+            mObstacle.draw(mCanvas, mPaint);
 
             // Draw some text while paused
             if(mPaused){
